@@ -1,0 +1,637 @@
+#include "stdafx.h"
+#include "TCore.h"
+#include "TexMapperView.h"
+#include "MainFrm.h"
+
+
+#include <omp.h>
+
+
+static bool bfinishRender = true;
+
+
+
+
+static TVec3 t_CenterAndArea_Foreground
+(
+const int W,
+const int H,
+const byte *binImg
+)
+{
+	//gravity center 
+	TVec3 gc(0, 0, 0);
+	int forePixN = 0 ;
+
+	for (int y = 0; y < H; ++y)
+		for (int x = 0; x < W; ++x)
+			if ( binImg[ x + y*W ] )
+			{
+				forePixN++;
+				gc[0] += x;
+				gc[1] += y;
+			}
+
+	gc /= forePixN;
+	gc[0] += 0.5;
+	gc[1] += 0.5;
+	gc[2]  = forePixN / (double)(W*H);
+
+	return gc;
+}
+
+
+
+
+
+
+
+
+
+
+static double t_Diff1
+(
+const int   W   ,
+const int   H   , 
+const byte* img1,
+const byte* img2,
+double &finMinAngle
+)
+{
+	const TVec3 gc1 = t_CenterAndArea_Foreground( W, H, img1 );
+	const TVec3 gc2 = t_CenterAndArea_Foreground( W, H, img2 );
+
+	//double scale = gc1[2] / gc2[2]; 
+	//fprintf( stderr, "scale %f\n", scale);
+
+	int     threadN  = omp_get_max_threads();
+	double *minDiff  = new double[threadN];
+	double *minAngle = new double[threadN];
+	for( int i=0; i < threadN; ++i) minDiff[i] = DBL_MAX;
+
+#pragma omp parallel for 
+	for( int angle = 0; angle  < 360; ++angle)
+	{
+		int id = omp_get_thread_num();
+
+		double sinT = sin( angle / 360.0 * 2 * M_PI );
+		double cosT = cos( angle / 360.0 * 2 * M_PI );
+
+		double diff = 0;
+		for (int y = 0; y < H; ++y) for (int x = 0; x < W; ++x)
+		{
+			double X = x + 0.5 - gc1[0];
+			double Y = y + 0.5 - gc1[1];
+			//X *= scale;
+			//Y *= scale;
+			int x1 = (int)(cosT * X - sinT * Y + gc2[0]);
+			int y1 = (int)(sinT * X + cosT * Y + gc2[1]);
+			
+			if( 0 <= x1 && 0 <= y1  && x1 < W && y1 < H) 
+				diff += abs( img1[ x + y * W] - img2[ x1 + y1 * W] );
+		}
+
+		if( diff < minDiff[id] )
+		{
+			minDiff [id] = diff ;
+			minAngle[id] =  angle / 360.0 * 2 * M_PI;
+		}
+	}
+
+	double finMinV = DBL_MAX;
+	for( int i=0; i < threadN; ++i) if( minDiff[i] < finMinV )
+	{
+		finMinV     = minDiff [i];
+		finMinAngle = minAngle[i];
+	}
+
+
+	delete[] minDiff ;
+	delete[] minAngle;
+
+
+	return finMinV / (255.0 * W * H);
+}
+
+
+
+
+
+
+static double t_Diff
+(
+const int   W   ,
+const int   H   , 
+const byte* img1,
+const byte* img2
+)
+{
+	double diff = 0;
+	const int WH = W*H;
+	for (int i = 0; i < WH; ++i) diff += (img1[i]==img2[i]) ? 0 : 1;
+	return diff / WH;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+static void t_coarseSearch
+(
+	const TTexMesh &sphere  , //candidate vertices
+	const byte *trgtImg  , //binary image
+	const double radius  ,
+	const double focalLen,
+	const int    flgX    ,   
+	const int    flgY    ,
+	const int    flgZ    ,
+	vector<TVec3> &sphV_DiffAngle
+)
+{
+	const int    RadStepN    = 1       ;
+	const double RadStep     = 200.0 / RadStepN;
+	const int    thetaYStepN = 1       ;
+	const int    thetaZStepN = 1       ;
+	const double thetaYStep  = 4 / 360.0 * 2 * M_PI / thetaYStepN;
+	const double thetaZStep  = 4 / 360.0 * 2 * M_PI / thetaZStepN;
+	
+
+	const int WH = CAMERA_RES_W * CAMERA_RES_H;
+
+	byte *binImg2 = new byte[ WH ];
+
+
+	//foarse search ------------------------------------------
+	sphV_DiffAngle.clear();
+	sphV_DiffAngle.resize(sphere.m_vSize, TVec3(-1,-1,-1)); 
+
+	for (int sphI = 0; sphI < sphere.m_vSize; ++sphI)
+	{
+		if( sphI % 100 == 0 ) t_info( "%d/%d\n", sphI, sphere.m_vSize);
+				
+		
+		const TVec3 &p = sphere.m_verts[sphI];
+
+		if ((flgX != 0 && flgX * p[0] < 0) || 
+			(flgY != 0 && flgY * p[1] < 0) || 
+			(flgZ != 0 && flgZ * p[2] < 0) ) continue;
+
+		double   theta = atan2(-p[2], p[0]);
+		double   phi   = asin(p[1]);
+<<<<<<< HEAD:TextureMapping/TexMapper/TexMapper/KCore.cpp
+		KCore::getInst()->setCamera( 0, KCamera(theta, phi, SEARCH_RAD, 0, 0, 0) );
+
+
+		KCore::getInst()->m_ogl.RedrawWindow();
+=======
+		TCore::getInst()->setCamera( 0, CameraParam(theta, phi, radius, 0, 0, 0, focalLen) );
+
+
+		CMainFrame    ::getInst()->SetForegroundWindow();
+		CMainFrame    ::getInst()->SetActiveWindow    ();
+		CTexMapperView::getInst()->SetActiveWindow    ();
+		CTexMapperView::getInst()->SetFocus();
+
+		bfinishRender = false;
+		//CTexMapperView::getInst()->UpdateData();
+		CTexMapperView::getInst()->RedrawWindow();
+		while( !bfinishRender );
+
+>>>>>>> 1e91912de39c702ff361dc1b58fff0b7e8f33158:TextureMapping/CameraCalibration/TexMapper/TCore.cpp
+
+		float *depth = CTexMapperView::getInst()->m_depth[0];
+		for (int i = 0; i < WH; ++i) binImg2[i] = depth[i] >= 0.9999 ? 0 : 255;
+
+		double angle;
+		double diff = t_Diff1(CAMERA_RES_W, CAMERA_RES_H, trgtImg, binImg2, angle);
+		sphV_DiffAngle[ sphI ].Set( diff, angle, 0 );
+
+	}
+
+
+	delete[] binImg2;
+
+
+}
+
+
+
+
+
+static CameraParam t_finSearch
+(
+	const CameraParam initCam, 
+	const byte *trgtImg  ,
+	double &foundDiff
+)
+{	
+	const int WH = CAMERA_RES_W * CAMERA_RES_H;
+
+	byte **binImg = new byte*[ 12 ];
+	for( int i= 0; i < 12; ++i) binImg[i] = new byte[WH];
+
+	float **depths = CTexMapperView::getInst()->m_depth;
+	double diff[12];
+
+	const double  STEP       = 0.0005          ;
+	const double  ANGLE_OFST = 1 / 360.0 * M_PI;
+	const double RADIAL_OFST = 10              ;
+
+
+	double prevDiff = DBL_MAX;
+
+	CameraParam cam = initCam;
+	for( int kkk = 0; kkk < 1000; ++kkk)
+	{
+		CTexMapperView::getInst()->SetFocus();
+
+		//compute gradient
+		for( int i=0; i < 12; ++i) TCore::getInst()->m_cameras[i] = cam; 
+
+		double angle = ANGLE_OFST  ;//* ( (kkk < 250) ? 1.0 : (kkk < 500) ?  1/2.0 : (kkk < 750) ? 1/3.0 : 1/4.0);
+		double rad   = RADIAL_OFST ;//* ( (kkk < 250) ? 1.0 : (kkk < 500) ?  1/2.0 : (kkk < 750) ? 1/3.0 : 1/4.0);
+		double h     = (kkk < 250) ? 1.0 * STEP : (kkk < 500) ?  STEP * 2.0 : (kkk < 750) ? STEP * 3.0 : STEP * 4.0; 
+
+
+		TCore::getInst()->m_cameras[ 0].m_theta -= angle;
+		TCore::getInst()->m_cameras[ 1].m_theta += angle;
+		TCore::getInst()->m_cameras[ 2].m_phi   -= angle;
+		TCore::getInst()->m_cameras[ 3].m_phi   += angle;
+		TCore::getInst()->m_cameras[ 4].m_radius-= rad  ;
+		TCore::getInst()->m_cameras[ 5].m_radius+= rad  ;
+		TCore::getInst()->m_cameras[ 6].m_tx    -= angle;
+		TCore::getInst()->m_cameras[ 7].m_tx    += angle;
+		TCore::getInst()->m_cameras[ 8].m_ty    -= angle;
+		TCore::getInst()->m_cameras[ 9].m_ty    += angle;
+		TCore::getInst()->m_cameras[10].m_tz    -= angle;
+		TCore::getInst()->m_cameras[11].m_tz    += angle;
+		CTexMapperView::getInst()->RedrawWindow();
+
+#pragma omp parallel for
+		for( int t=0; t < 12; ++t)
+		{
+			for (int i = 0; i < WH; ++i) binImg[t][i] = depths[t][i] >= 0.9999 ? 0 : 255;
+			diff[t] = t_Diff( CAMERA_RES_W, CAMERA_RES_H, trgtImg, binImg[t] ); 
+		}
+
+		cam.m_theta -= h * (diff[ 1] - diff[ 0]) / (2*angle);
+		cam.m_phi   -= h * (diff[ 3] - diff[ 2]) / (2*angle);
+		cam.m_radius-= h * (diff[ 5] - diff[ 4]) / (2*rad  ) * 100;
+		cam.m_tx    -= h * (diff[ 7] - diff[ 6]) / (2*angle);
+		cam.m_ty    -= h * (diff[ 9] - diff[ 8]) / (2*angle);
+		cam.m_tz    -= h * (diff[11] - diff[10]) / (2*angle);
+		
+
+		if( kkk % 30 == 0)
+		{
+			fprintf( stderr, "%f %f %f", angle, rad, h);
+
+			TCore::getInst()->m_cameras[0] = cam ;
+			CTexMapperView::getInst()->RedrawWindow();
+			for (int i = 0; i < WH; ++i) binImg[0][i] = depths[0][i] >= 0.9999 ? 0 : 255;
+			double diff = t_Diff( CAMERA_RES_W, CAMERA_RES_H, trgtImg, binImg[0] ); 
+			fprintf( stderr, "iteration:%d diff = %f\n", kkk, diff);
+
+			if( diff > prevDiff || fabs( diff - prevDiff) < 0.000001 ) break;
+			prevDiff = diff;
+		}
+	}
+
+
+	{
+		TCore::getInst()->m_cameras[0] = cam ;
+		CTexMapperView::getInst()->RedrawWindow();
+		for (int i = 0; i < WH; ++i) binImg[0][i] = depths[0][i] >= 0.9999 ? 0 : 255;
+		foundDiff = t_Diff( CAMERA_RES_W, CAMERA_RES_H, trgtImg, binImg[0] ); 
+		t_ExportGrayBmp("fin.bmp", CAMERA_RES_W, CAMERA_RES_H, binImg[0]);
+	}
+
+
+	for( int i= 0; i < 12; ++i) delete[] binImg[i];
+	delete[] binImg;
+
+	return cam;
+}
+
+
+
+
+
+/*
+static KCamera t_finSearch_bruteForce
+(
+	const KCamera initCam, 
+	const byte *trgtImg  ,
+	double &foundDiff
+)
+{	
+	const int     WH         = CAMERA_RES_W * CAMERA_RES_H;
+	const double  ANGLE_OFST = 1 / 360.0 * M_PI;
+
+	byte **binImg = new byte*[ 12 ];
+	for( int i= 0; i < 12; ++i) binImg[i] = new byte[WH];
+
+	float **depths = CTexMapperView::getInst()->m_depth;
+	double diff[12];
+	foundDiff = DBL_MAX;
+	KCamera  minCam;
+
+	for( int t = -3; t <=3; ++t )
+	for( int p = -3; p <=3; ++p ){
+	for( int r = -3; r <=3; ++r )
+	for( int ty= -3; ty<=3; ++ty)
+	for( int tz= -3; tz<=3; ++tz)
+	{
+		CTexMapperView::getInst()->SetFocus();
+
+		KCamera c = initCam;
+		c.m_eThe += t * ANGLE_OFST;
+		c.m_ePhi += p * ANGLE_OFST;
+		c.m_eRad += r * 20;
+		//c.m_eThx += t * ANGLE_OFST;
+		c.m_eThy += ty* ANGLE_OFST;
+		c.m_eThz += tz* ANGLE_OFST;
+
+		//compute gradient
+		for( int i=0; i < 12; ++i) KCore::getInst()->m_cameras[i] = c; 
+
+
+		
+		KCore::getInst()->m_cameras[ 0].m_eThx +=-6 * ANGLE_OFST ;
+		KCore::getInst()->m_cameras[ 1].m_eThx +=-5 * ANGLE_OFST ;
+		KCore::getInst()->m_cameras[ 2].m_eThx += 4 * ANGLE_OFST ;
+		KCore::getInst()->m_cameras[ 3].m_eThx += 3 * ANGLE_OFST ;
+		KCore::getInst()->m_cameras[ 4].m_eThx += 2 * ANGLE_OFST ;
+		KCore::getInst()->m_cameras[ 5].m_eThx += 1 * ANGLE_OFST ;
+		KCore::getInst()->m_cameras[ 6].m_eThx += 0 * ANGLE_OFST ;
+		KCore::getInst()->m_cameras[ 7].m_eThx += 1 * ANGLE_OFST ;
+		KCore::getInst()->m_cameras[ 8].m_eThx += 2 * ANGLE_OFST ;
+		KCore::getInst()->m_cameras[ 9].m_eThx += 3 * ANGLE_OFST ;
+		KCore::getInst()->m_cameras[10].m_eThx += 4 * ANGLE_OFST ;
+		KCore::getInst()->m_cameras[11].m_eThx += 5 * ANGLE_OFST ;
+
+		KCore::getInst()->m_ogl.RedrawWindow();
+
+#pragma omp parallel for
+		for( int t=0; t < 12; ++t)
+		{
+			for (int i = 0; i < WH; ++i) binImg[t][i] = depths[t][i] >= 0.9999 ? 0 : 255;
+			diff[t] = t_Diff( CAMERA_RES_W, CAMERA_RES_H, trgtImg, binImg[t] ); 
+		}
+
+
+		for( int t=0; t < 12; ++t) if( diff[t] < foundDiff)
+		{
+			foundDiff = diff[t];
+			minCam = KCore::getInst()->m_cameras[t];
+		}
+
+		
+	}
+		fprintf( stderr, "t = %d, p = %d\n", t, p, foundDiff);
+	}
+
+
+
+	for( int i= 0; i < 12; ++i) delete[] binImg[i];
+	delete[] binImg;
+
+	return minCam;
+}
+
+
+*/
+
+
+
+
+
+
+
+
+
+
+
+TCore::~TCore()
+{
+
+}
+
+
+TCore::TCore()
+{
+	CFileDialog sph_dlg(TRUE, NULL, NULL, OFN_HIDEREADONLY | OFN_ALLOWMULTISELECT, "sphere model(.obj) | *.obj");
+	if (sph_dlg.DoModal() != IDOK) exit(1);
+
+	m_sphere.initialize( sph_dlg.GetPathName() );
+	m_sphere.Translate( - m_sphere.getGravityCenter() );
+	for (int i = 0; i < m_sphere.m_vSize; ++i) m_sphere.m_verts[i].NormalizeSelf();
+
+
+	CFileDialog obj_dlg(TRUE, NULL, NULL, OFN_HIDEREADONLY | OFN_ALLOWMULTISELECT, "surface model(.obj) | *.obj");
+	if (obj_dlg.DoModal() != IDOK) exit(1);
+
+
+	m_mesh.initialize(obj_dlg.GetPathName());
+	m_mesh.Translate( - m_mesh.getGravityCenter() );
+
+
+	CFileDialog imginfo_dlg(TRUE, NULL, NULL, OFN_HIDEREADONLY | OFN_ALLOWMULTISELECT, "config file(.txt) | *.txt");
+	if (imginfo_dlg.DoModal() != IDOK) exit(1);
+
+	string path(imginfo_dlg.GetPathName());
+	string filename(imginfo_dlg.GetFileName());
+	m_dirPath = path.substr(0, path.length() - filename.length());
+
+	
+	char buf1[256], buf2[256];
+	int  flen, fX,fY,fZ, initDist;
+
+	FILE *fp = fopen(path.c_str(), "r");
+
+	while (fscanf(fp, "%s%s%d%d%d%d%d", buf1, buf2, &flen, &fX, &fY, &fZ, &initDist) == 7)
+	{
+		m_imgs.push_back( TargetImageInfo() );
+		m_imgs.back().m_imgFname    = string(buf1);
+		m_imgs.back().m_imgBinFname = string(buf2);
+		m_imgs.back().m_focalLen    = flen;
+		m_imgs.back().m_fX          = fX;
+		m_imgs.back().m_fY          = fY;
+		m_imgs.back().m_fZ          = fZ;
+		m_imgs.back().m_initDist    = initDist;
+	}
+
+	setCamera(0, CameraParam(0, 0, 100, 0, 0, 0, 50));
+	fprintf(stderr, "%s %s\n", path.c_str(), filename.c_str());
+}
+
+
+
+
+
+
+
+
+
+static void t_drawTrianglesWithNormal(const TTexMesh &m)
+{
+	glBegin(GL_TRIANGLES);
+	const TVec3 *verts = m.m_verts  ;
+	const TVec3 *norms = m.m_v_norms;
+	for (int i = 0; i < m.m_pSize; ++i)
+	{
+		const TPoly &p = m.m_polys[i];
+		glNormal3dv(norms[p.vIdx[0]].data); glVertex3dv( verts[p.vIdx[0]].data );
+		glNormal3dv(norms[p.vIdx[1]].data); glVertex3dv( verts[p.vIdx[1]].data );
+		glNormal3dv(norms[p.vIdx[2]].data); glVertex3dv( verts[p.vIdx[2]].data );
+	}
+	glEnd();
+}
+
+void TCore::drawScene()
+{
+
+	glEnable( GL_LIGHTING );
+	glEnable(GL_LIGHT0);
+	glEnable(GL_LIGHT1);
+	glEnable(GL_LIGHT2);
+	t_drawTrianglesWithNormal( m_mesh );
+	bfinishRender = true;
+}
+
+
+
+
+
+
+
+
+//search best fitting camera point and export it as text file
+static void t_optimizeCameraPosition
+(
+const byte     *binImg  ,
+const double   &focalLen,
+
+const double   &initDist, //for init search
+const int      &flgX    , 
+const int      &flgY    , 
+const int      &flgZ    , 
+const TTexMesh &sphere  , //for init search
+
+double         &optimCameraDiff,
+CameraParam    &optimCamera,
+vector<TVec3>  &sphV_diffAngle
+)
+{
+	//Coarse Search--------------------------------------------------------------
+	sphV_diffAngle.clear();
+	sphV_diffAngle.resize( sphere.m_vSize );
+
+	t_coarseSearch( sphere, binImg, initDist, focalLen, flgX,flgY,flgZ, sphV_diffAngle);
+
+	CameraParam initC(0,0,0, 0,0,0, focalLen );
+	double minDiff = DBL_MAX; 
+	for (int sphI = 0; sphI < sphere.m_vSize; ++sphI) if(sphV_diffAngle[sphI][0] > 0 && minDiff > sphV_diffAngle[sphI][0])
+	{
+		minDiff = sphV_diffAngle[sphI][0];
+		const TVec3 &p = sphere.m_verts[sphI];
+		initC.m_theta  = atan2(-p[2], p[0]);
+		initC.m_phi    = asin(p[1]);
+		initC.m_tx     = sphV_diffAngle[sphI][1];
+	}
+	initC.m_radius = initDist;
+	initC.m_ty     = 0       ;
+	initC.m_tz     = 0       ;
+
+	//Steepest dscent ------------------------------------------------------------	
+	optimCamera = t_finSearch( initC, binImg, optimCameraDiff);
+		
+}
+
+
+void TCore::cameraCalibration()
+{
+	for( int i = 0; i < m_imgs.size(); ++i)
+	{	
+		//load target silhouette image
+		byte *binImg = new byte[CAMERA_RES_W * CAMERA_RES_H];
+
+		TImage2D img;
+		bool     invertFlg = 0;
+		img.AllocateFromFile( (m_dirPath + m_imgs[i].m_imgBinFname).c_str(), invertFlg, 0);
+		if (invertFlg) img.FlipInY();
+		for( int y = 0; y < CAMERA_RES_H; ++y)
+		{
+			for( int x = 0; x < CAMERA_RES_W; ++x)
+			{
+				binImg[y * CAMERA_RES_W + x] = img[ 4 * 8 * ( (y * img.m_W ) + x )] ? 255 : 0; 
+			}
+		}
+
+
+		//find best position
+		double        optCamDiff;
+		CameraParam   optimCam(0,0,0, 0,0,0, m_imgs[i].m_focalLen);
+		vector<TVec3> sphV_diffAngleScale;
+		t_optimizeCameraPosition( binImg, m_imgs[i].m_focalLen, m_imgs[i].m_initDist, m_imgs[i].m_fX, m_imgs[i].m_fY, m_imgs[i].m_fZ, 
+			m_sphere, optCamDiff, optimCam, sphV_diffAngleScale);
+
+
+
+		//export info ------------------------ 
+		string fname = m_dirPath + m_imgs[i].m_imgBinFname + "cameraInfo.txt";
+		FILE *fp= fopen( fname.c_str(), "w");//‰ÂŽ‹‰»—p
+
+
+		fprintf( fp, "best_fitting_camera\n%f %f %f  %f %f %f  %f  %f\n", 
+			optimCam.m_theta, optimCam.m_phi, optimCam.m_radius, 
+			optimCam.m_tx   , optimCam.m_ty , optimCam.m_tz    , optimCam.m_fLen, optCamDiff);
+
+
+		for (int sphI = 0; sphI < m_sphere.m_vSize; ++sphI)
+		{
+			const TVec3 &p = m_sphere .m_verts[sphI];
+			double   theta = atan2(-p[2], p[0]);
+			double   phi   = asin(p[1]);
+			fprintf(fp, "%d %f %f %f   %f %f\n", sphI, theta, phi, m_imgs[i].m_initDist, sphV_diffAngleScale[sphI][0], sphV_diffAngleScale[sphI][1]);
+		}
+
+
+		fclose( fp );
+
+		delete[] binImg;
+	}
+}
+
+
+
+	/*
+	CFileDialog dlg(TRUE, NULL, NULL, OFN_HIDEREADONLY | OFN_ALLOWMULTISELECT, "coarse search file (.txt) | *.txt");
+	if (dlg.DoModal() == IDOK)
+	{
+		string path(dlg.GetPathName());
+		string filename(dlg.GetFileName());
+	
+
+		double Theta, Phi, Rad;
+		int idx;
+		int i=0;
+		FILE *fp = fopen(path.c_str(), "r");
+		while (fscanf(fp, "%d%lf%lf%lf%lf%lf",&idx, &Theta, &Phi, &Rad, &sphV_diffAngle[i][0], &sphV_diffAngle[i][1]) == 6) ++i;
+		fclose(fp);
+	}
+	else
+	{
+		t_coarseSearch(SEARCH_RAD, sphere, binImg1, 0,0,0, sphV_diffAngle);
+	}
+	*/
